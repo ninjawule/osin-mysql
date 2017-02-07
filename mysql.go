@@ -42,7 +42,14 @@ var schemas = []string{`CREATE TABLE IF NOT EXISTS {prefix}client (
 )`, `CREATE TABLE IF NOT EXISTS {prefix}refresh (
 	token         varchar(255) NOT NULL PRIMARY KEY,
 	access        varchar(255) NOT NULL
-)`}
+)`, `CREATE TABLE IF NOT EXISTS {prefix}expires (
+	id 		int(11) NOT NULL PRIMARY KEY AUTO_INCREMENT,
+	token		varchar(255) NOT NULL,
+	expires_at	timestamp NOT NULL,
+	INDEX expires_index (expires_at),
+	INDEX token_expires_index (token)
+)`,
+}
 
 var notFoundError = merry.New("Not found")
 
@@ -144,6 +151,9 @@ func (s *Storage) SaveAuthorize(data *osin.AuthorizeData) (err error) {
 	); err != nil {
 		return merry.Wrap(err)
 	}
+	if err = s.AddExpireAtData(data.Code, data.ExpireAt()); err != nil {
+		return merry.Wrap(err)
+	}
 	return nil
 }
 
@@ -177,6 +187,9 @@ func (s *Storage) LoadAuthorize(code string) (*osin.AuthorizeData, error) {
 // RemoveAuthorize revokes or deletes the authorization code.
 func (s *Storage) RemoveAuthorize(code string) (err error) {
 	if _, err = s.db.Exec(fmt.Sprintf("DELETE FROM %sauthorize WHERE code=?", s.tablePrefix), code); err != nil {
+		return merry.Wrap(err)
+	}
+	if err = s.RemoveExpireAtData(code); err != nil {
 		return merry.Wrap(err)
 	}
 	return nil
@@ -221,6 +234,9 @@ func (s *Storage) SaveAccess(data *osin.AccessData) (err error) {
 		return merry.Wrap(err)
 	}
 
+	if err = s.AddExpireAtData(data.AccessToken, data.ExpireAt()); err != nil {
+		return merry.Wrap(err)
+	}
 	if err = tx.Commit(); err != nil {
 		return merry.Wrap(err)
 	}
@@ -270,8 +286,10 @@ func (s *Storage) LoadAccess(code string) (*osin.AccessData, error) {
 
 // RemoveAccess revokes or deletes an AccessData.
 func (s *Storage) RemoveAccess(code string) (err error) {
-	_, err = s.db.Exec(fmt.Sprintf("DELETE FROM %saccess WHERE access_token=?", s.tablePrefix), code)
-	if err != nil {
+	if _, err = s.db.Exec(fmt.Sprintf("DELETE FROM %saccess WHERE access_token=?", s.tablePrefix), code); err != nil {
+		return merry.Wrap(err)
+	}
+	if err = s.RemoveExpireAtData(code); err != nil {
 		return merry.Wrap(err)
 	}
 	return nil
@@ -316,6 +334,28 @@ func (s *Storage) saveRefresh(tx *sql.Tx, refresh, access string) (err error) {
 		if rbe := tx.Rollback(); rbe != nil {
 			return merry.Wrap(rbe)
 		}
+		return merry.Wrap(err)
+	}
+	return nil
+}
+
+func (s *Storage) AddExpireAtData(code string, expire_at time.Time) error {
+	if _, err := s.db.Exec(
+		fmt.Sprintf("INSERT INTO %sexpires(token, expires_at) VALUES(?, ?)", s.tablePrefix),
+		code,
+		expire_at,
+	); err != nil {
+		return merry.Wrap(err)
+	}
+
+	return nil
+}
+
+func (s *Storage) RemoveExpireAtData(code string) error {
+	if _, err := s.db.Exec(
+		fmt.Sprintf("DELETE FROM %sexpires WHERE token=?", s.tablePrefix),
+		code,
+	); err != nil {
 		return merry.Wrap(err)
 	}
 	return nil
